@@ -7,8 +7,8 @@ import pandas as pd
 import streamlit as st
 
 APP_DIR = Path(__file__).resolve().parent
-DEFAULT_DATA = APP_DIR / "master_corrected_v3_to_2026-04-19.csv"
-HARD_CUTOFF = pd.Timestamp("2026-04-19 23:59:59")
+DEFAULT_DATA = APP_DIR / "master_corrected_v5_to_2026-10-04.csv"
+HARD_CUTOFF = pd.Timestamp("2026-10-04 23:59:59")
 
 SIGNALS = [
     "main","stat","green_spi","blue_spi","red_spi","orange_hsr","red_hsr",
@@ -30,7 +30,7 @@ FRIENDLY = {
 LONGISH = ["main","stat","green_spi","blue_spi","cloud4_long"]
 SHORTISH = ["red_spi","orange_hsr","red_hsr","cloud4_short"]
 
-st.set_page_config(page_title="Strategy Lab v1.4", layout="wide")
+st.set_page_config(page_title="Strategy Lab v1.5", layout="wide")
 
 @st.cache_data
 def load_data(path):
@@ -45,6 +45,16 @@ def load_data(path):
     df["ret_90d"] = df["close"] / df["close"].shift(540) - 1
     df["vol_30d"] = df["close"].pct_change().rolling(180).std() * np.sqrt(6 * 365)
     df["year"] = df["bar_time_display"].dt.year
+    if "research_period" not in df.columns:
+        df["research_period"] = np.select(
+            [
+                df["bar_time_display"] <= pd.Timestamp("2024-12-31 23:59:59"),
+                df["bar_time_display"].between(pd.Timestamp("2025-01-01"), pd.Timestamp("2025-12-31 23:59:59")),
+                df["bar_time_display"].between(pd.Timestamp("2026-01-01"), pd.Timestamp("2026-04-19 23:59:59")),
+            ],
+            ["development_2022_2024", "validation_2025", "preupdate_2026_to_apr19"],
+            default="new_oos_after_apr19",
+        )
     return df.reset_index(drop=True)
 
 def apply_regime(df, threshold):
@@ -245,6 +255,7 @@ def backtest(
                     "mae_from_entry": mae,
                     "max_drawdown_trade": trade_max_dd,
                     "year": int(df.at[entry_signal_i, "year"]),
+                    "research_period": df.at[entry_signal_i, "research_period"],
                 })
 
                 in_pos = False
@@ -721,6 +732,7 @@ def portfolio_backtest(
                     "mae_from_entry": mae,
                     "max_drawdown_trade": trade_max_dd,
                     "year": int(df.at[entry_signal_i, "year"]),
+                    "research_period": df.at[entry_signal_i, "research_period"],
                 })
 
                 equity = equity_after
@@ -790,10 +802,10 @@ def portfolio_breakdown(trades, group_col):
 
 
 # ---------------- UI ----------------
-st.title("Strategy Lab v1.4")
+st.title("Strategy Lab v1.5")
 st.caption(
     "Nested strategy builder + capital/leverage tester + per-group memory. "
-    "Research dataset hard-stops on 19 Apr 2026."
+    "Research dataset now extends through 4 Oct 2026; Telegram update after 19 Apr remains separately tagged as new OOS."
 )
 
 df0 = load_data(DEFAULT_DATA)
@@ -812,7 +824,7 @@ with st.sidebar:
         "Cooldown after exit, hours", min_value=0, max_value=168,
         value=0, step=4
     )
-    st.markdown("**Data cutoff:** 2026-04-19")
+    st.markdown(f"**Data cutoff:** {df0['bar_time_display'].max():%Y-%m-%d %H:%M}")
 
 df = apply_regime(df0, regime_threshold)
 cost = cost_bps / 10000.0
@@ -923,6 +935,13 @@ with tab1:
                 use_container_width=True, hide_index=True
             )
 
+            st.markdown("#### Performance by research period")
+            st.caption("The period after 19 Apr 2026 is the genuinely new data added in this update.")
+            st.dataframe(
+                fmt_perf_table(metric_table(trades, "research_period")),
+                use_container_width=True, hide_index=True
+            )
+
             st.markdown("#### Equity curve")
             eq = trades[["exit_time","net_return"]].copy()
             eq["equity"] = np.cumprod(1 + eq["net_return"])
@@ -960,7 +979,7 @@ with tab2:
     )
     st.warning(
         "Ranking uses 2022–2024 development + 2025 validation only. "
-        "2026 is attached only after ranking."
+        "2026 is attached only after ranking; the post-19-Apr segment is newly added OOS data."
     )
 
     q1,q2 = st.columns(2)
@@ -1265,6 +1284,15 @@ with tab3:
                     )
             st.dataframe(by_year, use_container_width=True, hide_index=True)
 
+            st.markdown("#### Capital performance by research period")
+            by_period = portfolio_breakdown(trades, "research_period")
+            for c in ["win_rate","avg_account_return","avg_underlying_return","worst_trade_drawdown"]:
+                if c in by_period:
+                    by_period[c] = by_period[c].map(
+                        lambda v: None if pd.isna(v) else f"{v:.2%}"
+                    )
+            st.dataframe(by_period, use_container_width=True, hide_index=True)
+
             st.markdown("#### Strategy Tester trade history")
             show = trades.copy()
             for c in [
@@ -1288,6 +1316,11 @@ with tab4:
     st.subheader("Market state coverage")
     coverage = pd.crosstab(df["year"], df["regime"])
     st.dataframe(coverage, use_container_width=True)
+
+    st.markdown("#### Research-period coverage")
+    period_cov = pd.crosstab(df["research_period"], df["regime"])
+    st.dataframe(period_cov, use_container_width=True)
+    st.caption("new_oos_after_apr19 is the newly supplied Telegram period and should be treated as fresh out-of-sample evidence.")
 
     st.markdown("#### Trailing 90-day BTC return")
     chart = df[["bar_time_display","ret_90d"]].dropna().set_index("bar_time_display")
